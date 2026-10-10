@@ -376,6 +376,21 @@ func anthropicToolChoiceToOpenAI(tc anthropic.ToolChoice, hasTools bool) *openai
 
 // The following are helper functions that convert an OpenAI ChatCompletionResponse to an Anthropic MessagesRepsonse
 
+// splitPromptTokens splits OpenAI's prompt_tokens, which include the tokens
+// read from and written to a prompt cache, into the uncached part, the cache
+// read and the cache write, as Anthropic reports them. The three add up to
+// promptTokens. Counts that are negative are taken as 0, and counts that
+// together exceed the prompt are ignored.
+func splitPromptTokens(promptTokens int, details *openai.PromptTokensDetails) (uncached, cacheRead, cacheWrite int) {
+	if details != nil {
+		cacheRead, cacheWrite = max(details.CachedTokens, 0), max(details.CacheWriteTokensValue(), 0)
+		if cacheRead+cacheWrite > promptTokens {
+			cacheRead, cacheWrite = 0, 0
+		}
+	}
+	return promptTokens - cacheRead - cacheWrite, cacheRead, cacheWrite
+}
+
 // openAIResponseToAnthropic converts an OpenAI ChatCompletionResponse to an Anthropic MessagesResponse.
 func openAIResponseToAnthropic(resp *openai.ChatCompletionResponse, model string) *anthropic.MessagesResponse {
 	var content []anthropic.MessagesContentBlock
@@ -424,9 +439,12 @@ func openAIResponseToAnthropic(resp *openai.ChatCompletionResponse, model string
 		stopReason = &sr
 	}
 
+	uncached, cacheRead, cacheWrite := splitPromptTokens(resp.Usage.PromptTokens, resp.Usage.PromptTokensDetails)
 	usage := &anthropic.Usage{
-		InputTokens:  float64(resp.Usage.PromptTokens),
-		OutputTokens: float64(resp.Usage.CompletionTokens),
+		InputTokens:              float64(uncached),
+		CacheReadInputTokens:     float64(cacheRead),
+		CacheCreationInputTokens: float64(cacheWrite),
+		OutputTokens:             float64(resp.Usage.CompletionTokens),
 	}
 
 	return &anthropic.MessagesResponse{
@@ -634,8 +652,10 @@ type sseMessageDeltaBody struct {
 }
 
 type sseOutputUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	OutputTokens             int `json:"output_tokens"`
 }
 
 type sseMessageStop struct {
@@ -653,19 +673,21 @@ const (
 
 // openAIStreamToAnthropicState tracks the state for converting OpenAI SSE chunks to Anthropic SSE events.
 type openAIStreamToAnthropicState struct {
-	buffer         bytes.Buffer
-	messageStarted bool // flag indicating emitted message_start
-	openBlock      anthropicStreamBlockType
-	closingEmitted bool // flag indicating emitted content_block_stop + message_delta + message_stop
-	messageID      string
-	model          string
-	stopReason     string // Anthropic stop_reason, mapped from OpenAI finish_reason
-	inputTokens    int
-	outputTokens   int
-	tokenUsage     metrics.TokenUsage
-	blockIndex     int                       // current Anthropic content block index
-	activeTools    map[int64]*streamToolCall // keyed by OpenAI tool_call index
-	requestModel   string
+	buffer           bytes.Buffer
+	messageStarted   bool // flag indicating emitted message_start
+	openBlock        anthropicStreamBlockType
+	closingEmitted   bool // flag indicating emitted content_block_stop + message_delta + message_stop
+	messageID        string
+	model            string
+	stopReason       string // Anthropic stop_reason, mapped from OpenAI finish_reason
+	inputTokens      int
+	cacheReadTokens  int
+	cacheWriteTokens int
+	outputTokens     int
+	tokenUsage       metrics.TokenUsage
+	blockIndex       int                       // current Anthropic content block index
+	activeTools      map[int64]*streamToolCall // keyed by OpenAI tool_call index
+	requestModel     string
 }
 
 type streamToolCall struct {
@@ -749,16 +771,20 @@ func (s *openAIStreamToAnthropicState) handleChunk(chunk *openai.ChatCompletionR
 	// Usage-only chunk (emitted when stream_options.include_usage=true)
 	// One of the two ways to indicate stream end (other is endOfStream)
 	if len(chunk.Choices) == 0 && chunk.Usage != nil {
-		s.inputTokens = chunk.Usage.PromptTokens
+		// OpenAI's cached_tokens and cache_write_tokens are parts of
+		// prompt_tokens, while Anthropic counts cache_read_input_tokens and
+		// cache_creation_input_tokens next to input_tokens. Split the prompt
+		// so that the three add up to it and nothing is counted twice.
+		uncached, cacheRead, cacheWrite := splitPromptTokens(chunk.Usage.PromptTokens, chunk.Usage.PromptTokensDetails)
+		s.inputTokens = uncached
+		s.cacheReadTokens = cacheRead
+		s.cacheWriteTokens = cacheWrite
 		s.outputTokens = chunk.Usage.CompletionTokens
-		// OpenAI's cached_tokens/cache_write_tokens are a breakdown within
-		// prompt_tokens, not additive like Anthropic's native cache fields, so we don't
-		// forward them here to avoid double-counting.
 		s.tokenUsage = metrics.ExtractTokenUsageFromExplicitCaching(
-			int64(s.inputTokens),
+			int64(uncached),
 			int64(s.outputTokens),
-			ptr.To(int64(0)),
-			ptr.To(int64(0)),
+			ptr.To(int64(cacheRead)),
+			ptr.To(int64(cacheWrite)),
 		)
 		return s.emitClosingEvents(out)
 	}
@@ -1070,8 +1096,10 @@ func (s *openAIStreamToAnthropicState) emitClosingEvents(out *[]byte) error {
 		Type:  "message_delta",
 		Delta: sseMessageDeltaBody{StopReason: stopReason, StopSequence: nil},
 		Usage: sseOutputUsage{
-			InputTokens:  s.inputTokens,
-			OutputTokens: s.outputTokens,
+			InputTokens:              s.inputTokens,
+			CacheReadInputTokens:     s.cacheReadTokens,
+			CacheCreationInputTokens: s.cacheWriteTokens,
+			OutputTokens:             s.outputTokens,
 		},
 	}
 	data, err := json.Marshal(msgDeltaPayload)
