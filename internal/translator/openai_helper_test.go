@@ -129,7 +129,7 @@ func TestBuildOpenAIChatCompletionRequest(t *testing.T) {
 				{Role: anthropic.MessageRoleUser, Content: anthropic.MessageContent{Text: "Hi"}},
 			},
 		}
-		req := buildOpenAIChatCompletionRequest(body, "")
+		req := mustBuildOpenAIChatCompletionRequest(t, body, "")
 		require.Len(t, req.Messages, 2)
 		require.NotNil(t, req.Messages[0].OfSystem)
 		assert.Equal(t, "You are helpful.", req.Messages[0].OfSystem.Content.Value)
@@ -151,7 +151,7 @@ func TestBuildOpenAIChatCompletionRequest(t *testing.T) {
 				{Role: anthropic.MessageRoleUser, Content: anthropic.MessageContent{Text: "Hi"}},
 			},
 		}
-		req := buildOpenAIChatCompletionRequest(body, "")
+		req := mustBuildOpenAIChatCompletionRequest(t, body, "")
 		require.Len(t, req.Messages, 2)
 		require.NotNil(t, req.Messages[0].OfSystem)
 		assert.Equal(t, "Be precise. Be concise.", req.Messages[0].OfSystem.Content.Value)
@@ -167,7 +167,7 @@ func TestBuildOpenAIChatCompletionRequest(t *testing.T) {
 				{Role: anthropic.MessageRoleUser, Content: anthropic.MessageContent{Text: "Hi"}},
 			},
 		}
-		req := buildOpenAIChatCompletionRequest(body, "")
+		req := mustBuildOpenAIChatCompletionRequest(t, body, "")
 		require.Len(t, req.Messages, 2)
 		require.NotNil(t, req.Messages[0].OfSystem)
 		assert.Equal(t, "You are helpful. Be concise.", req.Messages[0].OfSystem.Content.Value)
