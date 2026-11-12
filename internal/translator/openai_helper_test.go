@@ -1361,7 +1361,7 @@ func TestBuildOpenAIChatCompletionRequest_ThinkingConfig(t *testing.T) {
 			Messages:  []anthropic.MessageParam{{Role: anthropic.MessageRoleUser, Content: anthropic.MessageContent{Text: "Hi"}}},
 			Thinking:  &anthropic.Thinking{BetweenTools: &anthropic.ThinkingBetweenTools{Type: "between_tools"}},
 		}
-		req := buildOpenAIChatCompletionRequest(body, "")
+		req := mustBuildOpenAIChatCompletionRequest(t, body, "")
 		require.NotNil(t, req.Thinking)
 		require.NotNil(t, req.Thinking.OfBetweenTools)
 		assert.Equal(t, "between_tools", req.Thinking.OfBetweenTools.Type)
