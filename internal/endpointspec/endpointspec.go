@@ -495,7 +495,6 @@ func (MessagesEndpointSpec) ParseMultipartBody([]byte, string, bool) (internalap
 
 // GetTranslator implements [EndpointSpec.GetTranslator].
 func (MessagesEndpointSpec) GetTranslator(schema filterapi.VersionedAPISchema, modelNameOverride string) (translator.AnthropicMessagesTranslator, error) {
-	// Messages processor only supports Anthropic-native translators.
 	switch schema.Name {
 	case filterapi.APISchemaGCPAnthropic:
 		return translator.NewAnthropicToGCPAnthropicTranslator(schema.Version, modelNameOverride), nil
@@ -505,10 +504,12 @@ func (MessagesEndpointSpec) GetTranslator(schema filterapi.VersionedAPISchema, m
 		return translator.NewAnthropicToAnthropicTranslator(schema.AnthropicPrefix(), modelNameOverride), nil
 	case filterapi.APISchemaOpenAI:
 		return translator.NewAnthropicToChatCompletionOpenAITranslator(schema.OpenAIPrefix(), modelNameOverride), nil
+	case filterapi.APISchemaAWSOpenAI:
+		return translator.NewAnthropicToAWSOpenAITranslator(schema.OpenAIPrefix(), modelNameOverride), nil
 	case filterapi.APISchemaAWSBedrock:
 		return translator.NewAnthropicToAWSBedrockTranslator(modelNameOverride), nil
 	default:
-		return nil, fmt.Errorf("%w: /v1/messages endpoint only supports backends that return native Anthropic format (Anthropic, GCPAnthropic, AWSAnthropic). OpenAI and AWSBedrock translation is also supported. Backend %s uses different model format", internalapi.ErrInvalidRequestBody, schema.Name)
+		return nil, fmt.Errorf("%w: /v1/messages endpoint only supports Anthropic, GCPAnthropic, AWSAnthropic, OpenAI, AWSOpenAI, and AWSBedrock backends; got %s", internalapi.ErrInvalidRequestBody, schema.Name)
 	}
 }
 
