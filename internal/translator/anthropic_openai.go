@@ -29,20 +29,31 @@ import (
 // The prefix parameter is the prefix field set in the OpenAI VersionAPISchema used to construct the translated path
 // (e.g., "v1" produces "/v1/chat/completions", "gateway/v1" produces "/gateway/v1/chat/completions").
 func NewAnthropicToChatCompletionOpenAITranslator(prefix string, modelNameOverride internalapi.ModelNameOverride) AnthropicMessagesTranslator {
+	return newAnthropicToChatCompletionOpenAITranslator(prefix, modelNameOverride, false)
+}
+
+// NewAnthropicToAWSOpenAITranslator translates Anthropic Messages to Bedrock's OpenAI-compatible Chat Completions API.
+func NewAnthropicToAWSOpenAITranslator(prefix string, modelNameOverride internalapi.ModelNameOverride) AnthropicMessagesTranslator {
+	return newAnthropicToChatCompletionOpenAITranslator(prefix, modelNameOverride, true)
+}
+
+func newAnthropicToChatCompletionOpenAITranslator(prefix string, modelNameOverride internalapi.ModelNameOverride, adaptiveThinkingAsEnabled bool) *anthropicToOpenAIV1ChatCompletionTranslator {
 	passthroughTranslator := NewAnthropicToAnthropicTranslator(prefix, modelNameOverride)
 	return &anthropicToOpenAIV1ChatCompletionTranslator{
-		passthroughTranslator: &passthroughTranslator,
-		modelNameOverride:     modelNameOverride,
-		path:                  path.Join("/", prefix, "chat/completions"),
+		passthroughTranslator:     &passthroughTranslator,
+		modelNameOverride:         modelNameOverride,
+		adaptiveThinkingAsEnabled: adaptiveThinkingAsEnabled,
+		path:                      path.Join("/", prefix, "chat/completions"),
 	}
 }
 
 type anthropicToOpenAIV1ChatCompletionTranslator struct {
-	passthroughTranslator *AnthropicMessagesTranslator
-	modelNameOverride     internalapi.ModelNameOverride
-	requestModel          internalapi.RequestModel
-	stream                bool
-	streamState           *openAIStreamToAnthropicState
+	passthroughTranslator     *AnthropicMessagesTranslator
+	modelNameOverride         internalapi.ModelNameOverride
+	requestModel              internalapi.RequestModel
+	stream                    bool
+	streamState               *openAIStreamToAnthropicState
+	adaptiveThinkingAsEnabled bool
 	// The path of the chat completions endpoint, prefixed with the OpenAI path prefix.
 	path string
 	// Redaction configuration for debug logging
@@ -66,6 +77,15 @@ func (a *anthropicToOpenAIV1ChatCompletionTranslator) RequestBody(_ []byte, body
 	newBody, err = json.Marshal(openAIReq)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to marshal OpenAI request: %w", err)
+	}
+
+	if a.adaptiveThinkingAsEnabled && openAIReq.Thinking != nil && openAIReq.Thinking.OfAdaptive != nil {
+		// Bedrock rejects adaptive thinking. The client did not specify a budget,
+		// so send only the enabled type rather than adding a zero budget.
+		newBody, err = sjson.SetRawBytesOptions(newBody, "thinking", []byte(`{"type":"enabled"}`), sjsonOptions)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to set Bedrock thinking config: %w", err)
+		}
 	}
 
 	// Add stop sequences via sjson because ChatCompletionNewParamsStopUnion (from the external openai-go SDK)

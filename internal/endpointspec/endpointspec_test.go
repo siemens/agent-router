@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"errors"
 	"mime/multipart"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -334,6 +335,7 @@ func TestMessagesEndpointSpec_GetTranslator(t *testing.T) {
 		{Name: filterapi.APISchemaAnthropic},
 		{Name: filterapi.APISchemaOpenAI},     // This is for OpenAI-schema backends like vLLM that support the /v1/messages endpoint
 		{Name: filterapi.APISchemaAWSBedrock}, // This is for AWS Bedrock translation from the /v1/messages endpoint
+		{Name: filterapi.APISchemaAWSOpenAI},
 	} {
 		translator, err := spec.GetTranslator(schema, "override")
 		require.NoError(t, err)
@@ -342,6 +344,73 @@ func TestMessagesEndpointSpec_GetTranslator(t *testing.T) {
 
 	_, err := spec.GetTranslator(filterapi.VersionedAPISchema{Name: filterapi.APISchemaCohere}, "override")
 	require.ErrorContains(t, err, "only supports")
+}
+
+func TestMessagesEndpointSpec_ThinkingTranslation(t *testing.T) {
+	spec := MessagesEndpointSpec{}
+	for _, tc := range []struct {
+		name         string
+		schema       filterapi.VersionedAPISchema
+		thinking     string
+		wantThinking string
+		wantPath     string
+	}{
+		{
+			name:         "AWSOpenAI adaptive falls back to enabled without a budget",
+			schema:       filterapi.VersionedAPISchema{Name: filterapi.APISchemaAWSOpenAI},
+			thinking:     `{"type":"adaptive","display":"summarized"}`,
+			wantThinking: `{"type":"enabled"}`,
+			wantPath:     "/openai/v1/chat/completions",
+		},
+		{
+			name:         "AWSOpenAI preserves explicit budget",
+			schema:       filterapi.VersionedAPISchema{Name: filterapi.APISchemaAWSOpenAI, Prefix: "v1"},
+			thinking:     `{"type":"enabled","budget_tokens":4096}`,
+			wantThinking: `{"type":"enabled","budget_tokens":4096}`,
+			wantPath:     "/v1/chat/completions",
+		},
+		{
+			name:         "AWSOpenAI preserves disabled",
+			schema:       filterapi.VersionedAPISchema{Name: filterapi.APISchemaAWSOpenAI},
+			thinking:     `{"type":"disabled"}`,
+			wantThinking: `{"type":"disabled"}`,
+			wantPath:     "/openai/v1/chat/completions",
+		},
+		{
+			name:     "AWSOpenAI does not add thinking when unset",
+			schema:   filterapi.VersionedAPISchema{Name: filterapi.APISchemaAWSOpenAI},
+			wantPath: "/openai/v1/chat/completions",
+		},
+		{
+			name:         "generic OpenAI preserves adaptive even with the same prefix",
+			schema:       filterapi.VersionedAPISchema{Name: filterapi.APISchemaOpenAI, Prefix: "openai/v1"},
+			thinking:     `{"type":"adaptive"}`,
+			wantThinking: `{"type":"adaptive"}`,
+			wantPath:     "/openai/v1/chat/completions",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `{"model":"alias","max_tokens":8192,"stream":true,"messages":[{"role":"user","content":"Hello"},{"role":"system","content":"Use short replies"}]`
+			if tc.thinking != "" {
+				raw += `,"thinking":` + tc.thinking
+			}
+			raw += `}`
+			_, body, _, _, err := spec.ParseBody([]byte(raw), false)
+			require.NoError(t, err)
+			translator, err := spec.GetTranslator(tc.schema, "backend-model")
+			require.NoError(t, err)
+			headers, translated, err := translator.RequestBody([]byte(raw), body, false)
+			require.NoError(t, err)
+			require.Contains(t, headers, internalapi.Header{":path", tc.wantPath})
+			require.Contains(t, headers, internalapi.Header{"content-length", strconv.Itoa(len(translated))})
+
+			want := `{"model":"backend-model","max_completion_tokens":8192,"stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"Use short replies"},{"role":"user","content":"Hello"}]`
+			if tc.wantThinking != "" {
+				want += `,"thinking":` + tc.wantThinking
+			}
+			require.JSONEq(t, want+`}`, string(translated))
+		})
+	}
 }
 
 func TestRerankEndpointSpec_ParseBody(t *testing.T) {
