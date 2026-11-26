@@ -352,13 +352,16 @@ func toolResultToText(tr *anthropic.ToolResultBlockParam) string {
 }
 
 // anthropicSystemPromptToText extracts a plain string from an Anthropic system prompt,
-// concatenating text blocks if the prompt is in array form.
+// separating non-empty text blocks with newlines if the prompt is in array form.
 func anthropicSystemPromptToText(s *anthropic.SystemPrompt) string {
 	if s.Text != "" {
 		return s.Text
 	}
 	var sb strings.Builder
 	for _, t := range s.Texts {
+		if sb.Len() > 0 && t.Text != "" {
+			sb.WriteByte('\n')
+		}
 		sb.WriteString(t.Text)
 	}
 	return sb.String()
