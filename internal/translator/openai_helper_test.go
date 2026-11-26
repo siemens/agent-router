@@ -144,7 +144,7 @@ func TestBuildOpenAIChatCompletionRequest(t *testing.T) {
 				{
 					Role: "system",
 					Content: anthropic.MessageContent{Array: []anthropic.ContentBlockParam{
-						{Text: &anthropic.TextBlockParam{Type: "text", Text: "Be precise. "}},
+						{Text: &anthropic.TextBlockParam{Type: "text", Text: "Be precise."}},
 						{Text: &anthropic.TextBlockParam{Type: "text", Text: "Be concise."}},
 					}},
 				},
@@ -154,24 +154,41 @@ func TestBuildOpenAIChatCompletionRequest(t *testing.T) {
 		req := mustBuildOpenAIChatCompletionRequest(t, body, "")
 		require.Len(t, req.Messages, 2)
 		require.NotNil(t, req.Messages[0].OfSystem)
-		assert.Equal(t, "Be precise. Be concise.", req.Messages[0].OfSystem.Content.Value)
+		assert.Equal(t, "Be precise.\nBe concise.", req.Messages[0].OfSystem.Content.Value)
 		require.NotNil(t, req.Messages[1].OfUser)
 	})
 
 	t.Run("top-level and inline system prompts are merged", func(t *testing.T) {
 		body := &anthropic.MessagesRequest{
 			Model:  "claude-3",
-			System: &anthropic.SystemPrompt{Text: "You are helpful. "},
+			System: &anthropic.SystemPrompt{Text: "Answer in French"},
 			Messages: []anthropic.MessageParam{
-				{Role: "system", Content: anthropic.MessageContent{Text: "Be concise."}},
+				{Role: "system", Content: anthropic.MessageContent{Text: "Use short sentences"}},
 				{Role: anthropic.MessageRoleUser, Content: anthropic.MessageContent{Text: "Hi"}},
 			},
 		}
 		req := mustBuildOpenAIChatCompletionRequest(t, body, "")
 		require.Len(t, req.Messages, 2)
 		require.NotNil(t, req.Messages[0].OfSystem)
-		assert.Equal(t, "You are helpful. Be concise.", req.Messages[0].OfSystem.Content.Value)
+		assert.Equal(t, "Answer in French\nUse short sentences", req.Messages[0].OfSystem.Content.Value)
 		require.NotNil(t, req.Messages[1].OfUser)
+	})
+
+	t.Run("multiple inline system prompts keep their boundaries", func(t *testing.T) {
+		body := &anthropic.MessagesRequest{
+			Model: "claude-3",
+			Messages: []anthropic.MessageParam{
+				{Role: "system", Content: anthropic.MessageContent{Text: "Return JSON"}},
+				{Role: "system", Content: anthropic.MessageContent{Text: "Do not explain"}},
+				{Role: anthropic.MessageRoleUser, Content: anthropic.MessageContent{Text: "Hi"}},
+			},
+		}
+		req := mustBuildOpenAIChatCompletionRequest(t, body, "")
+		require.Len(t, req.Messages, 2)
+		require.NotNil(t, req.Messages[0].OfSystem)
+		assert.Equal(t, "Return JSON\nDo not explain", req.Messages[0].OfSystem.Content.Value)
+		require.NotNil(t, req.Messages[1].OfUser)
+		assert.Equal(t, "Hi", req.Messages[1].OfUser.Content.Value)
 	})
 
 	t.Run("empty system prompt not prepended", func(t *testing.T) {
@@ -390,14 +407,27 @@ func TestAnthropicSystemPromptToText(t *testing.T) {
 			expected: "You are helpful.",
 		},
 		{
-			name: "array of text blocks concatenated",
+			name: "array of text blocks separated by newlines",
 			system: &anthropic.SystemPrompt{
 				Texts: []anthropic.TextBlockParam{
 					{Text: "You are "},
 					{Text: "very helpful."},
 				},
 			},
-			expected: "You are very helpful.",
+			expected: "You are \nvery helpful.",
+		},
+		{
+			name: "empty text blocks ignored",
+			system: &anthropic.SystemPrompt{
+				Texts: []anthropic.TextBlockParam{
+					{},
+					{Text: "Return JSON"},
+					{},
+					{Text: "Do not explain"},
+					{},
+				},
+			},
+			expected: "Return JSON\nDo not explain",
 		},
 		{
 			name:     "empty system prompt",
